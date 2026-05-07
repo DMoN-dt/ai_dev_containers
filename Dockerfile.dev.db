@@ -1,0 +1,12 @@
+FROM postgres:16.13-alpine
+
+ARG DB_DEV
+ARG DB_TEST
+
+RUN if [ -z "$DB_DEV" ] || [ -z "$DB_TEST" ]; then \
+      echo "---------------------------------------------------------------"; \
+      echo "ERROR: Database names are not set!"; \
+      echo "FIX: Run 'cp .env.example .env' and fill in the variables."; \
+      echo "---------------------------------------------------------------"; \
+      exit 1; \
+    fi

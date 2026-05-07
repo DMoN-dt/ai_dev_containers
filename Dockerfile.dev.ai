@@ -1,0 +1,21 @@
+FROM blazing_star_project_dev_app:latest
+
+RUN apk add --no-cache python3 py3-pip wget
+
+# В образе ruby:3.0.5-alpine nodejs v16, а для Gemini надо новее.
+# https://pkgs.alpinelinux.org/package/v3.20/main/x86/nodejs
+
+# Берем Node.js 20 и npm из официального образа
+COPY --from=node:20.15-alpine /usr/local/bin/node /usr/local/bin/node
+COPY --from=node:20.15-alpine /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
+
+# Проверка версии: если версия не начинается на v20, сборка упадет с ошибкой
+RUN node_version=$(node -v) && \
+    if [ "${node_version%%.*}" != "v20" ]; then \
+        echo "ERROR: Expected Node v20, but found $node_version"; \
+        exit 1; \
+    else \
+        echo "SUCCESS: Node version is $node_version"; \
+    fi

@@ -1,0 +1,72 @@
+// For format details, see https://aka.ms/devcontainer.json.
+// For config options, see the README at: https://github.com/devcontainers/templates/tree/main/src/ruby-rails-postgres
+
+{
+  "dockerComposeFile": ["../docker-compose.dev.yml"],
+
+  "name": "BlazingStar AI Agent",
+  "service": "ai_agent", // The service VS Code connects to
+  "workspaceFolder": "/app_blazing_star_project_ai_out", // Root directory inside the container
+  "runServices": [
+    "db_postgres",
+    "db_redis_ai",
+    "ai_agent"
+  ],
+
+  // "name": "BlazingStar DEV",
+  // "service": "app", // The service VS Code connects to
+  // "workspaceFolder": "/app_blazing_star_project", // Root directory inside the container
+  // "runServices": [
+  //   "db_postgres",
+  //   "db_redis",
+  //   "app"
+  // ],
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+
+        // DOCKER ROOTLESS IMPORTANT: Ensure you run './.dev/rootless_socket.sh' on the host 
+        // before starting the container and after every host reboot.
+        "docker.host": "unix:///run/user/${localEnv:DOCKER_USER_ID}/docker.sock"
+      },
+
+      // Extensions that will be automatically installed INSIDE the container
+      "extensions": [
+        // "github.copilot",        // Autocomplete (aware of the container context)
+        // "github.copilot-chat",   // Chat (analyzes files inside the container)
+        // "misogi.ruby-rubocop"
+      ]
+    }
+  },
+
+  // Environment variables for processes running INSIDE the container
+  // "containerEnv": {
+  //     "http_proxy": "",
+  //     "https_proxy": "",
+  //     "ftp_proxy": "",
+  //     "all_proxy": "",
+  //     "HTTP_PROXY": "",
+  //     "HTTPS_PROXY": ""
+  // },
+    
+  // Environment variables for the VS Code Server itself
+  // "remoteEnv": {
+  //     "http_proxy": "",
+  //     "https_proxy": "",
+  //     "HTTP_PROXY": "",
+  //     "HTTPS_PROXY": ""
+  // },
+
+  "overrideCommand": true,
+  "postStartCommand": "/ai-entrypoint.sh",
+
+  // Command to run once after VS Code successfully connects to the container and installs the server
+  // "postCreateCommand": "",
+
+  // Command to run on the HOST before the container starts
+  // grants permissions to the Docker socket owned by another user
+  // "initializeCommand": "./.dev/rootless_socket.sh",
+
+  "shutdownAction": "stopCompose"
+}

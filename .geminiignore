@@ -1,0 +1,44 @@
+# https://geminicli.com/docs/cli/gemini-ignore/
+
+.git/
+log/
+tmp/
+bin/
+public/assets/
+public/packs/
+node_modules/
+.env*
+.local
+**/*.key
+**/*.p12
+**/*.crt
+**/*.pem
+**/*.cer
+**/id_rsa*
+storage/
+
+db/*.sqlite3
+db/*.sqlite3-journal
+/vendor/bundle/
+/coverage/
+
+config/master.key
+config/credentials.yml.enc
+
+.bundle/
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.sln.iml
+
+.gemini/*
+!.gemini/project-context

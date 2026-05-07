@@ -1,0 +1,47 @@
+# https://developer.android.com/studio/gemini/aiexclude?hl=ru
+
+# There is no official file for Copilot that you drop into a repository to manage exclusions.
+# Exclusion is configured by administrators in the repository or organization settings on GitHub.com.
+
+.git/
+log/
+tmp/
+bin/
+public/assets/
+public/packs/
+node_modules/
+.env*
+.local
+**/*.key
+**/*.p12
+**/*.crt
+**/*.pem
+**/*.cer
+**/id_rsa*
+storage/
+
+db/*.sqlite3
+db/*.sqlite3-journal
+/vendor/bundle/
+/coverage/
+
+config/master.key
+config/credentials.yml.enc
+
+.bundle/
+
+# VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+.history/
+*.code-workspace
+
+# JetBrains
+.idea/
+*.sln.iml
+
+.gemini/*
+!.gemini/project-context
