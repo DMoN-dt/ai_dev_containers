@@ -1,21 +1,31 @@
 #!/bin/sh
+# Выставляет права на coverage/log/tmp во всех worktree AI-агентов.
+set -e
 
-# Check if .devcontainer directory exists in the current folder
-if [ -d "./.devcontainer" ]; then
-    echo "✅ .devcontainer directory found. Proceeding with permissions setup..."
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+AI_DEV_DIR="$SCRIPT_DIR"
+AI_PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/lib/ai_common.sh"
 
-    PROJECT_PATH="./ai_worktree"
-
-    # Apply permissions recursively to all files and folders inside, 
-    # but not to the current directory itself
-    # chmod -R u+wX,g+wX,o+wX *
-
-    chmod -R u+wX,g+wX,o+wX $PROJECT_PATH/coverage $PROJECT_PATH/log $PROJECT_PATH/tmp
-
-    echo "🚀 Permissions updated successfully for all subdirectories and files in $PROJECT_PATH"
-
+if [ "$#" -gt 0 ]; then
+  dirs=""
+  for slot in "$@"; do
+    dirs="$dirs $(ai_worktree_path "$slot")"
+  done
 else
-    echo "❌ Error: .devcontainer directory not found!"
-    echo "Please ensure you are in the project root directory before running this script."
-    exit 1
+  dirs=$(ai_list_worktree_dirs)
 fi
+
+if [ -z "$dirs" ]; then
+  echo "ℹ️  Worktree не найдены"
+  exit 0
+fi
+
+for worktree in $dirs; do
+  [ -d "$worktree" ] || continue
+  for rel in coverage log tmp; do
+    [ -d "$worktree/$rel" ] || continue
+    chmod -R u+wX,g+wX,o+wX "$worktree/$rel"
+  done
+  echo "✅ Права обновлены: $worktree"
+done

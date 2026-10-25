@@ -1,4 +1,5 @@
-FROM blazing_star_project_dev_app:latest
+ARG BASE_IMAGE=blazing_star_project_dev_app:latest
+FROM ${BASE_IMAGE}
 
 RUN apk add --no-cache python3 py3-pip wget
 
@@ -18,4 +19,11 @@ RUN node_version=$(node -v) && \
         exit 1; \
     else \
         echo "SUCCESS: Node version is $node_version"; \
+    fi
+
+# Образ HOME для per-agent volume. Если базовый app-образ старый и не содержит
+# /opt/app-home-skeleton, создаём его из /root текущего образа.
+RUN if [ ! -d /opt/app-home-skeleton ]; then \
+        mkdir -p /opt/app-home-skeleton && \
+        cp -a /root/.zshrc /root/.oh-my-zsh /root/.profile /root/.gitconfig /opt/app-home-skeleton/ 2>/dev/null || true; \
     fi

@@ -1,11 +1,6 @@
-#!/bin/bash
-# Создает Git Worktree для AI контейнера с целью изоляции файлов и ветки на хосте.
+#!/bin/sh
+# Обратная совместимость: создание worktree переехало в wtree create.
+set -e
 
-git branch ai_workspace 2>/dev/null || true
-
-if [ ! -d "ai_worktree" ]; then
-  git worktree add ./ai_worktree ai_workspace
-  echo "✅ Worktree создана в папке ./ai_worktree"
-else
-  echo "ℹ️ Worktree уже существует. Для обновления сделайте git reset внутри папки."
-fi
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec sh "$SCRIPT_DIR/wtree" create "$@"

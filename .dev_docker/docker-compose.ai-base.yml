@@ -1,0 +1,90 @@
+# Базовый шаблон AI-агента.
+# Подключается через extends из docker-compose.dev.yml.
+# Сам по себе не является сервисом проекта и никогда не запускается.
+
+services:
+  ai_agent_template:
+    image: ${PROJECT_NAME:?PROJECT_NAME is required}-ai:latest
+    build:
+      context: ${AI_AGENT_DOCKER_CONTEXT}
+      dockerfile: ${AI_AGENT_DOCKER_FILE}
+      args:
+        BASE_IMAGE: ${AI_BUILD_BASE_IMAGE:-${PROJECT_NAME:?PROJECT_NAME is required}-app:latest}
+
+        #  Прокси в args - для этапа сборки контейнера:
+        #  - http_proxy=${AI_PROXY_URL}
+        #  - https_proxy=${AI_PROXY_URL}
+        #  - no_proxy: ${AI_NO_PROXY}
+
+    entrypoint: ["/ai-entrypoint.sh"]
+    command: ["/bin/zsh"]
+    working_dir: /app_${PROJECT_NAME}_ai_out
+    # Держим stdin открытым, чтобы zsh не завершился в detached-режиме.
+    # tty намеренно не включаем: иначе wizard при старте увидит TTY и может зависнуть на read.
+    stdin_open: true
+    environment:
+      PROJECT_NAME: ${PROJECT_NAME}
+
+      # Внутренние адреса и порты Docker-сети.
+      # Внешние порты (POSTGRES_EXTERNAL_PORT/REDIS_EXTERNAL_PORT) нужны только хосту.
+      DB_HOST: db_postgres
+      DB_PORT: "5432"
+      PGHOST: db_postgres
+      PGPORT: "5432"
+      REDIS_HOST: db_redis_ai
+      REDIS_PORT: "6379"
+
+      ROOTLESS_UMASK: "true"
+      TERM: xterm-256color
+      COLORTERM: truecolor
+      ZSH_COMPDUMP: /root/.zcompdump
+      # ZSH_DISABLE_COMPFIX=true
+
+      # Пакеты и конфиги CLI живут в per-agent home volume.
+      PYTHONUSERBASE: /root/.local
+      NPM_CONFIG_PREFIX: /root/.npm-global
+      PATH: "/root/.npm-global/bin:/root/.local/bin:/app_ai_tools/bin:/usr/local/bundle/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      BUNDLE_GEMFILE: /app_${PROJECT_NAME}_ai_out/Gemfile
+      RAILS_LOG_TO_FILE_ROTATE: "true"
+      RAILS_LOG_MAX_SIZE: ${RAILS_LOG_MAX_SIZE:-10485760}
+      RAILS_SPEC_STATUS_FILE_PATH: log/spec_examples.txt
+
+      # Read-only git не должен пытаться обновлять index.
+      GIT_OPTIONAL_LOCKS: "0"
+
+      AI_AUTO_INSTALL: ${AI_AUTO_INSTALL:-no}
+      AI_AUTO_DB_PREPARE: ${AI_AUTO_DB_PREPARE:-false}
+      AI_BUNDLE_INSTALL: ${AI_BUNDLE_INSTALL:-auto}
+      AI_VERIFY_NETWORK: ${AI_VERIFY_NETWORK:-true}
+
+      AI_CHECK_POSTGRES: ${AI_CHECK_POSTGRES:-true}
+      AI_CHECK_REDIS: ${AI_CHECK_REDIS:-true}
+
+      http_proxy: ${AI_PROXY_URL:-}
+      https_proxy: ${AI_PROXY_URL:-}
+      no_proxy: ${AI_NO_PROXY:-}
+
+    volumes:
+      # Исходники только для чтения. Worktree'ы лежат внутри этого каталога,
+      # но для peer review используются отдельные ro-mount'ы /ai_peers/<slot>.
+      - ${AI_AGENT_DOCKER_CONTEXT}:/app_${PROJECT_NAME}_ai_src:ro # Исходники (только чтение)
+
+      # Скрытие файлов .env
+      # - /dev/null:/app_${PROJECT_NAME}_ai_src/.env:ro
+      # - /dev/null:/app_${PROJECT_NAME}_ai_out/.env:ro
+      # - /dev/null:/app_${PROJECT_NAME}_ai_src/.env.example:ro
+      # - /dev/null:/app_${PROJECT_NAME}_ai_out/.env.example:ro
+
+      - ../${AI_INSTRUCTIONS_PATH:-/dev/null}:/app_${PROJECT_NAME}_ai_src/.dev_ai_instructions:ro
+      # - ../${AI_INSTRUCTIONS_PATH:-/dev/null}:/app_${PROJECT_NAME}_ai_out/.dev_ai_instructions:ro
+
+      - ../${DEV_DOCKER_TOOLS_PATH:-./.dev}/ai-entrypoint.sh:/ai-entrypoint.sh:ro
+      - ../${DEV_DOCKER_TOOLS_PATH:-./.dev}/ai_tools:/app_ai_tools:ro
+      - ../${DEV_DOCKER_TOOLS_PATH:-./.dev}/lib:/app_ai_lib:ro
+
+    networks:
+      - ai_isolated_network
+      - host_bridge
+      - shared_network # Сеть с выходом во внешние сети хоста - только на время установки пакетов в консоли, чтобы интернет был не через прокси.
+

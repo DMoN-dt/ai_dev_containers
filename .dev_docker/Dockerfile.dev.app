@@ -42,6 +42,10 @@ RUN curl -fsSL -o /tmp/install.sh https://raw.githubusercontent.com/ohmyzsh/ohmy
     rm /tmp/install.sh && \
     git config --global --add safe.directory ${APP_DIR}
 
+# Образ HOME для per-agent volumes /root: пустой named volume скрывает .zshrc/.oh-my-zsh.
+RUN mkdir -p /opt/app-home-skeleton && \
+    cp -a /root/.zshrc /root/.oh-my-zsh /root/.profile /root/.gitconfig /opt/app-home-skeleton/ 2>/dev/null || true
+
 ENV BUNDLE_PATH=/usr/local/bundle \
     BUNDLE_BIN=/usr/local/bundle/bin \
     BUNDLE_JOBS=4 \
@@ -63,9 +67,13 @@ RUN if [ "${APP_DIR}" != "/app" ] && [ ! -e /app ]; then \
 
 # Для rootless mode создаем entrypoint с запуском umask 000,
 # чтобы новые файлы в контейнере создавались с правами rw-rw-rw-
+# Заодно восстанавливаем образ HOME при первом запуске с пустым volume.
 RUN printf '#!/bin/sh\n\
 if [ "$ROOTLESS_UMASK" = "true" ]; then\n\
     umask 000\n\
+fi\n\
+if [ -d /opt/app-home-skeleton ] && [ ! -e "$HOME/.zshrc" ]; then\n\
+    cp -a /opt/app-home-skeleton/. "$HOME/"\n\
 fi\n\
 exec "$@"\n' > /entrypoint.sh \
     && chmod +x /entrypoint.sh
@@ -76,7 +84,7 @@ exec "$@"\n' > /entrypoint.sh \
 # fi' > /etc/profile.d/rootless_umask.sh \
 # && chmod +x /etc/profile.d/rootless_umask.sh
 
-# Устанавливаем часовой пояс 
+# Устанавливаем часовой пояс
 RUN if [ ! -f "/usr/share/zoneinfo/$TZONE" ]; then \
         echo "FATAL: Invalid Timezone '$TZONE'. Check your .env file."; \
         exit 1; \

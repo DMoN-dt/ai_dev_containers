@@ -1,0 +1,360 @@
+# Контейнеры для локальной разработки
+
+services:
+  app:
+    # Имя образа, которое переиспользуется AI-контейнерами как BASE_IMAGE.
+    image: ${APP_IMAGE_NAME:-dev_app:latest}
+    build:
+      context: ${APP_DOCKER_CONTEXT}
+      dockerfile: ${APP_DOCKER_FILE}
+      args:
+        - APP_DIR=/app_${PROJECT_NAME}
+        - TZONE=${TIMEZONE:-UTC}
+    profiles: ["manual"] # Чтобы не запускать App автоматически в фоне
+    environment:
+      - PROJECT_NAME=${PROJECT_NAME}
+      - PGUSER=${POSTGRES_ADMIN_USER}
+      - PGPASSWORD=${POSTGRES_ADMIN_PASSWORD}
+      - PGHOST=db_postgres
+      - PGPORT=5432
+      - DB_HOST=db_postgres
+      - DB_PORT=5432
+      - DB_USER=${POSTGRES_ADMIN_USER}
+      - DB_PASSWORD=${POSTGRES_ADMIN_PASSWORD}
+      - POSTGRES_DB_DEVELOPMENT=${POSTGRES_DB_DEVELOPMENT}
+      - POSTGRES_DB_TEST=${POSTGRES_DB_TEST}
+      # Внутри Docker-сети Redis всегда слушает 6379; REDIS_EXTERNAL_PORT — только для хоста.
+      - REDIS_URL=redis://db_redis:6379
+
+      - ROOTLESS_UMASK=true
+      - ZSH_DISABLE_COMPFIX=true
+      - ZSH_COMPDUMP=/root/.zcompdump
+
+      - BUNDLE_GEMFILE=/app_${PROJECT_NAME}/Gemfile
+      - RAILS_LOG_TO_FILE_ROTATE=true
+      - RAILS_LOG_MAX_SIZE=${RAILS_LOG_MAX_SIZE}
+      - RAILS_SPEC_STATUS_FILE_PATH=log/spec_examples.txt
+
+      # Данные для .dev/setup_ai_user.sh <slot>.
+      # Значения задаются в .env; имена переменных привязаны к слоту ai_agent_N
+      - AI_AGENT_DB_USER=${AI_AGENT_DB_USER:-}
+      - AI_AGENT_DB_PASSWORD=${AI_AGENT_DB_PASSWORD:-}
+      - AI_AGENT_DB_DEVELOPMENT=${AI_AGENT_DB_DEVELOPMENT:-}
+      - AI_AGENT_DB_TEST=${AI_AGENT_DB_TEST:-}
+      - AI_AGENT_TEST_ENV_NUMBER=${AI_AGENT_TEST_ENV_NUMBER:-}
+
+      - AI_AGENT_2_DB_USER=${AI_AGENT_2_DB_USER:-}
+      - AI_AGENT_2_DB_PASSWORD=${AI_AGENT_2_DB_PASSWORD:-}
+      - AI_AGENT_2_DB_DEVELOPMENT=${AI_AGENT_2_DB_DEVELOPMENT:-}
+      - AI_AGENT_2_DB_TEST=${AI_AGENT_2_DB_TEST:-}
+      - AI_AGENT_2_TEST_ENV_NUMBER=${AI_AGENT_2_TEST_ENV_NUMBER:-}
+
+      - AI_AGENT_3_DB_USER=${AI_AGENT_3_DB_USER:-}
+      - AI_AGENT_3_DB_PASSWORD=${AI_AGENT_3_DB_PASSWORD:-}
+      - AI_AGENT_3_DB_DEVELOPMENT=${AI_AGENT_3_DB_DEVELOPMENT:-}
+      - AI_AGENT_3_DB_TEST=${AI_AGENT_3_DB_TEST:-}
+      - AI_AGENT_3_TEST_ENV_NUMBER=${AI_AGENT_3_TEST_ENV_NUMBER:-}
+
+    volumes:
+      - ${APP_DOCKER_CONTEXT}:/app_${PROJECT_NAME}
+      - ${DEV_DOCKER_TOOLS_PATH:-./.dev}:/app_${PROJECT_NAME}/.dev:ro
+      - bundle_data:/usr/local/bundle
+      - root_home:/root
+
+      # Worktrees AI-агентов только для чтения: нужны для запуска
+      # актуального setup_ai_user.sh из worktree до merge в основную ветку.
+      # - ./ai_worktree:/ai_peers/ai_agent:ro
+      # - ./ai2_worktree:/ai_peers/ai_agent_2:ro
+      # - ./ai3_worktree:/ai_peers/ai_agent_3:ro
+
+      # Скрытие файла .ENV
+      - /dev/null:/app_${PROJECT_NAME}/.env:ro
+
+      # Папки без монтирования с хоста:
+      # - /app_${PROJECT_NAME}/coverage
+
+    working_dir: /app_${PROJECT_NAME}
+    depends_on:
+      - db_postgres
+      - db_redis
+    stdin_open: true
+    tty: true
+    networks:
+      - shared_network
+
+  db_postgres:
+    build:
+      context: ${POSTGRES_DOCKER_CONTEXT}
+      dockerfile: ${POSTGRES_DOCKER_FILE}
+      args:
+        DB_DEV: ${POSTGRES_DB_DEVELOPMENT}
+        DB_TEST: ${POSTGRES_DB_TEST}
+    # restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: ${POSTGRES_CPUS_LIMIT:-1.0} # 1 ядро
+          memory: ${POSTGRES_MEMORY_LIMIT:-1G}
+        reservations:
+          memory: 256M
+    environment:
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_EXTERNAL_PORT}:5432"
+    networks:
+      - shared_network
+      - ai_isolated_network
+
+  db_redis:
+    image: redis:7.2-alpine
+    # restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '0.50' # Максимум половина ядра
+          memory: 512M # Максимальный объем, который может занять контейнер
+        reservations:
+          memory: 64M # Гарантированный объем, резервируемый при старте
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_EXTERNAL_PORT}:6379"
+    networks:
+      - shared_network
+
+
+  # Один Redis на всех AI-агентов. Агенты используют разные logical DB index.
+  # volume не задан, чтобы кэш сбрасывался при остановке контейнера.
+  db_redis_ai:
+    image: redis:7.2-alpine
+    hostname: db_redis_ai
+    profiles: ["ai"]
+    # command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    # volumes:
+    #   - ${DEV_DOCKER_TOOLS_PATH:-./.dev}/redis-ai.conf:/usr/local/etc/redis/redis.conf:ro
+    deploy:
+      resources:
+        limits:
+          cpus: ${AI_REDIS_CPUS_LIMIT:-0.30}
+          memory: ${AI_REDIS_MEMORY_LIMIT:-256M}
+        reservations:
+          memory: 32M
+    networks:
+      - ai_isolated_network
+
+
+  # Каждый AI-сервис расширяет общий шаблон из docker-compose.ai-base.yml.
+  # extends соединяет environment по ключам и volumes по target, в отличие от YAML anchor.
+  #
+  # Per-slot переменные из .env (AI_AGENT[_N]_*) — это входные имена:
+  # compose проецирует их в общие AI_ACTIVE_*, AI_MODEL_NAME, DB_*,
+  # ANTHROPIC_* и т.д., которые понимают скрипты контейнера: entrypoint, wizard и CLI.
+  # 
+  # Общие PROJECT_NAME, RAILS_LOG_MAX_SIZE, ROOTLESS_UMASK,
+  # DB_HOST/PORT и REDIS_HOST/PORT приходят из ai-base, вы можете их здесь перепоределить.
+  #
+  # Не передаются в AI-контейнеры намеренно:
+  #   POSTGRES_ADMIN_USER/PASSWORD — админские креды Postgres (только app);
+  #   POSTGRES_DB_DEVELOPMENT/TEST — у каждого слота свои AI_AGENT*_DB_*;
+  #   POSTGRES_EXTERNAL_PORT/REDIS_EXTERNAL_PORT — только для хоста;
+  #   APP_DOCKER_* / POSTGRES_DOCKER_* / AI_AGENT_DOCKER_* / APP_IMAGE_NAME — параметры сборки;
+  #   *_CPUS_LIMIT / *_MEMORY_LIMIT — лимиты compose.
+  # 
+  # AI_INSTRUCTIONS_PATH и DEV_DOCKER_TOOLS_PATH используются как пути
+  # монтирования в ai-base и не дублируются в environment.
+  #
+  # Глобальные ANTHROPIC_*/GROQ_*/GEMINI_* подставляются только в свой
+  # fallback-слот; для других слотов задавайте AI_AGENT[_N]_<PROVIDER>_*.
+  # Глобальные OPENROUTER_*/COPILOT_* не подставляются ни в один слот:
+  # используйте AI_AGENT[_N]_OPENROUTER_* и AI_AGENT[_N]_COPILOT_API_KEY.
+  #
+  ai_agent:
+    extends:
+      file: ./.dev_docker/docker-compose.ai-base.yml
+      service: ai_agent_template
+    profiles: ["ai"]
+    hostname: ai_agent
+    environment:
+      AI_AGENT_INSTANCE: ai_agent
+
+      # Общие параметры из .env, которые понимают скрипты
+      # внутри контейнера. AI_AUTO_* также заданы в ai-base; здесь
+      # продублированы для наглядности. AI_PROXY_URL/AI_NO_PROXY
+      # проецируются в http_proxy/https_proxy/no_proxy в ai-base.
+      AI_AUTO_INSTALL: ${AI_AUTO_INSTALL:-no}
+      AI_AUTO_DB_PREPARE: ${AI_AUTO_DB_PREPARE:-false}
+      AI_BUNDLE_INSTALL: ${AI_BUNDLE_INSTALL:-auto}
+      AI_VERIFY_NETWORK: ${AI_VERIFY_NETWORK:-true}
+      TZ: ${TIMEZONE:-UTC}
+
+      AI_ACTIVE_AGENT: ${AI_AGENT_ACTIVE_AGENT:-${AI_ACTIVE_AGENT:-}}
+      AI_ACTIVE_PROVIDER: ${AI_AGENT_ACTIVE_PROVIDER:-${AI_ACTIVE_PROVIDER:-}}
+      AI_MODEL_NAME: ${AI_AGENT_MODEL_NAME:-${AI_MODEL_NAME:-}}
+
+      DB_USER: ${AI_AGENT_DB_USER:?Set AI_AGENT_DB_USER in .env}
+      DB_PASSWORD: ${AI_AGENT_DB_PASSWORD:?Set AI_AGENT_DB_PASSWORD in .env}
+      PGUSER: ${AI_AGENT_DB_USER:?Set AI_AGENT_DB_USER in .env}
+      PGPASSWORD: ${AI_AGENT_DB_PASSWORD:?Set AI_AGENT_DB_PASSWORD in .env}
+      POSTGRES_DB_DEVELOPMENT: ${AI_AGENT_DB_DEVELOPMENT:?Set AI_AGENT_DB_DEVELOPMENT in .env}
+      POSTGRES_DB_TEST: ${AI_AGENT_DB_TEST:?Set AI_AGENT_DB_TEST in .env}
+      TEST_ENV_NUMBER: ${AI_AGENT_TEST_ENV_NUMBER:-}
+      REDIS_URL: redis://db_redis_ai:6379/${AI_AGENT_REDIS_DB:-0}
+
+      # --- API-ключи ai_agent ---
+      # У каждого агента можно использовать как индивидуальные настройки ключей (AI_AGENT_<PROVIDER>_<PARAM>),
+      # так и общие (<PROVIDER>_<PARAM>).
+      # 
+      ANTHROPIC_API_KEY: ${AI_AGENT_ANTHROPIC_API_KEY:-${ANTHROPIC_API_KEY:-}}
+      ANTHROPIC_AUTH_TOKEN: ${AI_AGENT_ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-}}
+      ANTHROPIC_BASE_URL: ${AI_AGENT_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-}}
+      GROQ_API_KEY: ${AI_AGENT_GROQ_API_KEY:-${GROQ_API_KEY:-}}
+      GROQ_API_BASE: ${AI_AGENT_GROQ_API_BASE:-${GROQ_API_BASE:-}}
+      GEMINI_API_KEY: ${AI_AGENT_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
+      GOOGLE_API_KEY: ${AI_AGENT_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
+      GEMINI_API_BASE: ${AI_AGENT_GEMINI_API_BASE:-${GEMINI_API_BASE:-}}
+      OPENROUTER_API_KEY: ${AI_AGENT_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY:-}}
+      OPENROUTER_API_BASE: ${AI_AGENT_OPENROUTER_API_BASE:-${OPENROUTER_API_BASE:-}}
+      COPILOT_API_KEY: ${AI_AGENT_COPILOT_API_KEY:-${COPILOT_API_KEY:-}}
+      DEEPSEEK_HARNESS_API_KEY: ${AI_AGENT_DEEPSEEK_HARNESS_API_KEY:-${DEEPSEEK_HARNESS_API_KEY:-}}
+      DEEPSEEK_HARNESS_API_BASE: ${AI_AGENT_DEEPSEEK_HARNESS_BASE_URL:-${DEEPSEEK_HARNESS_BASE_URL:-}}
+
+      # --- Настройки моделей Claude/Anthropic (per-agent) ---
+      # Для ANTHROPIC_MODEL используется цепочка
+      #   AI_AGENT_ANTHROPIC_MODEL -> AI_AGENT_MODEL_NAME -> ANTHROPIC_MODEL.
+      # ANTHROPIC_MODEL: ${AI_AGENT_ANTHROPIC_MODEL:-${AI_AGENT_MODEL_NAME:-${ANTHROPIC_MODEL:-}}}
+      ANTHROPIC_DEFAULT_MODEL: ${AI_AGENT_ANTHROPIC_DEFAULT_MODEL:-${ANTHROPIC_DEFAULT_MODEL:-}}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${AI_AGENT_ANTHROPIC_DEFAULT_SONNET_MODEL:-${ANTHROPIC_DEFAULT_SONNET_MODEL:-}}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${AI_AGENT_ANTHROPIC_DEFAULT_OPUS_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-}}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${AI_AGENT_ANTHROPIC_DEFAULT_HAIKU_MODEL:-${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}}
+      CLAUDE_CODE_SUBAGENT_MODEL: ${AI_AGENT_CLAUDE_CODE_SUBAGENT_MODEL:-${CLAUDE_CODE_SUBAGENT_MODEL:-}}
+      CLAUDE_CODE_EFFORT_LEVEL: ${AI_AGENT_CLAUDE_CODE_EFFORT_LEVEL:-${CLAUDE_CODE_EFFORT_LEVEL:-}}
+      ENABLE_TOOL_SEARCH: ${AI_AGENT_ENABLE_TOOL_SEARCH:-${ENABLE_TOOL_SEARCH:-}}
+
+      DEEPSEEK_SEARCH_BASE_URL: ${AI_AGENT_DEEPSEEK_SEARCH_BASE_URL:-${DEEPSEEK_SEARCH_BASE_URL:-}}
+
+    volumes:
+      - ${AI_AGENT_DOCKER_WORKTREE}:/app_${PROJECT_NAME}_ai_out:rw # Рабочая папка (запись)
+      - ai_agent_home:/root
+
+      # При необходимости взаимодействия агентов:
+      # Worktree других агентов (только чтение)
+      - ${AI_AGENT_2_DOCKER_WORKTREE:-/dev/null}:/ai_peers/ai_agent_2:ro
+      # - ${AI_AGENT_3_DOCKER_WORKTREE:-/dev/null}:/ai_peers/ai_agent_3:ro
+
+    depends_on:
+      - db_postgres
+      - db_redis_ai
+    links:
+      - db_postgres
+      - db_redis_ai
+    # networks:
+    #   - shared_network # только на время установки пакетов в консоли, чтобы интернет был не через прокси
+
+  ai_agent_2:
+    extends:
+      file: ./.dev_docker/docker-compose.ai-base.yml
+      service: ai_agent_template
+    profiles: ["ai"]
+    hostname: ai_agent_2
+    environment:
+      AI_AGENT_INSTANCE: ai_agent_2
+
+      # Общие параметры из .env, которые понимают скрипты
+      # внутри контейнера. AI_AUTO_* также заданы в ai-base; здесь
+      # продублированы для наглядности. AI_PROXY_URL/AI_NO_PROXY
+      # проецируются в http_proxy/https_proxy/no_proxy в ai-base.
+      AI_AUTO_INSTALL: ${AI_AUTO_INSTALL:-no}
+      AI_AUTO_DB_PREPARE: ${AI_AUTO_DB_PREPARE:-false}
+      AI_BUNDLE_INSTALL: ${AI_BUNDLE_INSTALL:-auto}
+      AI_VERIFY_NETWORK: ${AI_VERIFY_NETWORK:-true}
+      TZ: ${TIMEZONE:-UTC}
+
+      AI_ACTIVE_AGENT: ${AI_AGENT_2_ACTIVE_AGENT:-${AI_ACTIVE_AGENT:-}}
+      AI_ACTIVE_PROVIDER: ${AI_AGENT_2_ACTIVE_PROVIDER:-${AI_ACTIVE_PROVIDER:-}}
+      AI_MODEL_NAME: ${AI_AGENT_2_MODEL_NAME:-${AI_MODEL_NAME:-}}
+
+      DB_USER: ${AI_AGENT_2_DB_USER:?Set AI_AGENT_2_DB_USER in .env}
+      DB_PASSWORD: ${AI_AGENT_2_DB_PASSWORD:?Set AI_AGENT_2_DB_PASSWORD in .env}
+      PGUSER: ${AI_AGENT_2_DB_USER:?Set AI_AGENT_2_DB_USER in .env}
+      PGPASSWORD: ${AI_AGENT_2_DB_PASSWORD:?Set AI_AGENT_2_DB_PASSWORD in .env}
+      POSTGRES_DB_DEVELOPMENT: ${AI_AGENT_2_DB_DEVELOPMENT:?Set AI_AGENT_2_DB_DEVELOPMENT in .env}
+      POSTGRES_DB_TEST: ${AI_AGENT_2_DB_TEST:?Set AI_AGENT_2_DB_TEST in .env}
+      TEST_ENV_NUMBER: ${AI_AGENT_2_TEST_ENV_NUMBER:-}
+      REDIS_URL: redis://db_redis_ai:6379/${AI_AGENT_2_REDIS_DB:-0}
+
+      # --- API-ключи ai_agent_2 ---
+      # У каждого агента можно использовать как индивидуальные настройки ключей (AI_AGENT_2_<PROVIDER>_<PARAM>),
+      # так и общие (<PROVIDER>_<PARAM>).
+      # 
+      ANTHROPIC_API_KEY: ${AI_AGENT_2_ANTHROPIC_API_KEY:-${ANTHROPIC_API_KEY:-}}
+      ANTHROPIC_AUTH_TOKEN: ${AI_AGENT_2_ANTHROPIC_AUTH_TOKEN:-${ANTHROPIC_AUTH_TOKEN:-}}
+      ANTHROPIC_BASE_URL: ${AI_AGENT_2_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-}}
+      GROQ_API_KEY: ${AI_AGENT_2_GROQ_API_KEY:-${GROQ_API_KEY:-}}
+      GROQ_API_BASE: ${AI_AGENT_2_GROQ_API_BASE:-${GROQ_API_BASE:-}}
+      GEMINI_API_KEY: ${AI_AGENT_2_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
+      GOOGLE_API_KEY: ${AI_AGENT_2_GEMINI_API_KEY:-${GEMINI_API_KEY:-}}
+      GEMINI_API_BASE: ${AI_AGENT_2_GEMINI_API_BASE:-${GEMINI_API_BASE:-}}
+      OPENROUTER_API_KEY: ${AI_AGENT_2_OPENROUTER_API_KEY:-${OPENROUTER_API_KEY:-}}
+      OPENROUTER_API_BASE: ${AI_AGENT_2_OPENROUTER_API_BASE:-${OPENROUTER_API_BASE:-}}
+      COPILOT_API_KEY: ${AI_AGENT_2_COPILOT_API_KEY:-${COPILOT_API_KEY:-}}
+      DEEPSEEK_HARNESS_API_KEY: ${AI_AGENT_2_DEEPSEEK_HARNESS_API_KEY:-${DEEPSEEK_HARNESS_API_KEY:-}}
+      DEEPSEEK_HARNESS_API_BASE: ${AI_AGENT_2_DEEPSEEK_HARNESS_BASE_URL:-${DEEPSEEK_HARNESS_BASE_URL:-}}
+
+      # --- Настройки моделей Claude/Anthropic (per-agent) ---
+      # Для ANTHROPIC_MODEL используется цепочка
+      #   AI_AGENT_2_ANTHROPIC_MODEL -> AI_AGENT_2_MODEL_NAME -> ANTHROPIC_MODEL.
+      # ANTHROPIC_MODEL: ${AI_AGENT_2_ANTHROPIC_MODEL:-${AI_AGENT_2_MODEL_NAME:-${ANTHROPIC_MODEL:-}}}
+      ANTHROPIC_DEFAULT_MODEL: ${AI_AGENT_2_ANTHROPIC_DEFAULT_MODEL:-${ANTHROPIC_DEFAULT_MODEL:-}}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${AI_AGENT_2_ANTHROPIC_DEFAULT_SONNET_MODEL:-${ANTHROPIC_DEFAULT_SONNET_MODEL:-}}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${AI_AGENT_2_ANTHROPIC_DEFAULT_OPUS_MODEL:-${ANTHROPIC_DEFAULT_OPUS_MODEL:-}}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${AI_AGENT_2_ANTHROPIC_DEFAULT_HAIKU_MODEL:-${ANTHROPIC_DEFAULT_HAIKU_MODEL:-}}
+      CLAUDE_CODE_SUBAGENT_MODEL: ${AI_AGENT_2_CLAUDE_CODE_SUBAGENT_MODEL:-${CLAUDE_CODE_SUBAGENT_MODEL:-}}
+      CLAUDE_CODE_EFFORT_LEVEL: ${AI_AGENT_2_CLAUDE_CODE_EFFORT_LEVEL:-${CLAUDE_CODE_EFFORT_LEVEL:-}}
+      ENABLE_TOOL_SEARCH: ${AI_AGENT_2_ENABLE_TOOL_SEARCH:-${ENABLE_TOOL_SEARCH:-}}
+
+      DEEPSEEK_SEARCH_BASE_URL: ${AI_AGENT_2_DEEPSEEK_SEARCH_BASE_URL:-${DEEPSEEK_SEARCH_BASE_URL:-}}
+
+    volumes:
+      - ${AI_AGENT_2_DOCKER_WORKTREE}:/app_${PROJECT_NAME}_ai_out:rw # Рабочая папка (запись)
+      - ai_agent_2_home:/root
+
+      # При необходимости взаимодействия агентов:
+      # Worktree других агентов (только чтение)
+      - ${AI_AGENT_DOCKER_WORKTREE:-/dev/null}:/ai_peers/ai_agent:ro
+      # - ${AI_AGENT_3_DOCKER_WORKTREE:-/dev/null}:/ai_peers/ai_agent_3:ro
+
+    depends_on:
+      - db_postgres
+      - db_redis_ai
+    # networks:
+    #   - shared_network # только на время установки пакетов в консоли, чтобы интернет был не через прокси
+
+
+
+# Volumes - монтируемые каталоги, которые сохраняются между перезапусками контейнеров
+volumes:
+  bundle_data:
+  pg_data:
+  redis_data:
+
+  # Home-каталог контейнера app.
+  root_home:
+
+  # Home-каталоги агентов:
+  ai_agent_home:
+  ai_agent_2_home:
+  ai_agent_3_home:
+
+
+networks:
+  host_bridge: # Мост с хостом
+    driver: bridge
+  shared_network: # Сеть для dev контейнеров, с выходом во внешние сети хоста
+    external: true
+    name: shared_dev_network
+  ai_isolated_network:
+    driver: bridge # Сеть для AI компонентов
+    internal: true # запрещает выход во внешние сети (в том числе в Интернет)

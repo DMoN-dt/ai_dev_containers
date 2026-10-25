@@ -1,0 +1,202 @@
+#!/bin/sh
+# Управление worktree AI-агентов.
+#
+# Использование:
+#   wtree create <slot> [base]
+#   wtree switch <slot> <branch> [clean]
+#   wtree host [slot...]
+#   wtree docker [slot...]
+#   wtree list
+
+set -e
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+AI_DEV_DIR="$SCRIPT_DIR"
+AI_PROJECT_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+. "$SCRIPT_DIR/lib/ai_common.sh"
+
+usage() {
+  cat <<'EOF'
+Использование:
+  wtree create <slot> [base]         создать worktree и ветку
+  wtree switch <slot> <branch> [clean]
+                                     переключить ветку в worktree
+  wtree host [slot...]               вернуть .git-пути для git на хосте
+  wtree docker [slot...]             переписать .git на контейнерные пути
+  wtree list                         показать git worktree list
+EOF
+}
+
+cmd=${1:-}
+[ -n "$cmd" ] || { usage; exit 1; }
+shift
+
+case "$cmd" in
+  create)
+    [ $# -ge 1 ] || { usage; exit 1; }
+    slot=$(ai_normalize_slot "$1")
+    base=${2:-HEAD}
+    worktree=$(ai_worktree_path "$slot")
+    branch=$(ai_branch_name "$slot")
+
+    ai_require_command git
+
+    if [ -d "$worktree" ]; then
+      if git -C "$worktree" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ℹ️  Worktree уже существует: $worktree"
+        echo "   Ветка не меняется. Для переключения: ./.dev/wtree switch $slot <branch>"
+        exit 0
+      fi
+      ai_die "Каталог $worktree существует, но не является git worktree"
+    fi
+
+    (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree prune)
+
+    if (CDPATH= cd -- "$AI_PROJECT_ROOT" && git show-ref --verify --quiet "refs/heads/$branch"); then
+      echo "🔀 Ветка $branch уже есть, подключаю её к $worktree"
+      (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree add "$worktree" "$branch")
+    else
+      echo "🌱 Создаю ветку $branch от $base и worktree $worktree"
+      (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree add -b "$branch" "$worktree" "$base")
+    fi
+
+    # Назначение прав доступа на созданную директорию worktree для Docker-контейнеров
+    chmod -R g+wX,o+wX "$worktree"
+
+    # git worktree add не копирует gitignored-файлы.
+    for rel in \
+      config/settings/development.local.yml \
+      config/settings/test.local.yml \
+      config/master.key
+    do
+      src="$AI_PROJECT_ROOT/$rel"
+      dst="$worktree/$rel"
+      if [ -f "$src" ] && [ ! -e "$dst" ]; then
+        mkdir -p "$(dirname -- "$dst")"
+        cp -p "$src" "$dst"
+        echo "📄 Скопирован $rel"
+      fi
+    done
+
+    # if [ -f "$worktree/config/settings/development.local.yml" ] && \
+    #    grep -Eq "redis://(localhost|127\\.0\\.0\\.1)" "$worktree/config/settings/development.local.yml" 2>/dev/null; then
+    #   echo "⚠️  В config/settings/development.local.yml Redis захардкожен на localhost."
+    #   echo "   Для контейнера используйте: url: <%= ENV.fetch('REDIS_URL', 'redis://localhost:6379') %>"
+    # fi
+
+    if [ -e "$worktree/.env" ]; then
+      echo "⚠️  В worktree найден .env. Не храните секреты внутри worktree: peer-mount покажет их другим агентам."
+    fi
+
+    echo ""
+    echo "Далее:"
+    echo "  ./.dev/wtree docker $slot"
+    echo "  docker compose exec app ./.dev/setup_ai_user.sh $slot -y"
+    echo "  docker compose exec --profile ai $slot ./bin/rails db:schema:load"
+    ;;
+
+  switch)
+    [ $# -ge 2 ] || { usage; exit 1; }
+    slot=$(ai_normalize_slot "$1")
+    target_branch=$2
+    mode=${3:-keep}
+    worktree=$(ai_worktree_path "$slot")
+
+    [ -d "$worktree" ] || ai_die "Worktree не найден: $worktree"
+    ai_require_command git
+
+    (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree repair >/dev/null 2>&1 || true)
+    (CDPATH= cd -- "$worktree" && git worktree repair >/dev/null 2>&1 || true)
+
+    current_branch=$(CDPATH= cd -- "$worktree" && git branch --show-current 2>/dev/null || true)
+
+    if [ "$current_branch" = "$target_branch" ]; then
+      echo "ℹ️  Ветка $target_branch уже активна в $worktree"
+      if [ "$mode" != "clean" ]; then
+        ai_write_container_gitdir "$worktree"
+        exit 0
+      fi
+      echo "🧹 CLEAN: сбрасываю локальные изменения"
+      (CDPATH= cd -- "$worktree" && git restore . && git clean -fd)
+    else
+      if [ "$mode" = "clean" ]; then
+        echo "🧹 CLEAN: сбрасываю локальные изменения"
+        (CDPATH= cd -- "$worktree" && git restore . && git clean -fd)
+      else
+        echo "📝 KEEP: сохраняю локальные изменения"
+      fi
+      echo "🔀 Переключаю $worktree на $target_branch"
+      (CDPATH= cd -- "$worktree" && git checkout "$target_branch")
+      (CDPATH= cd -- "$worktree" && git pull origin "$target_branch" >/dev/null 2>&1 || true)
+    fi
+
+    ai_write_container_gitdir "$worktree"
+    echo "✅ Готово: $worktree -> $target_branch"
+    ;;
+
+  host)
+    ai_require_command git
+    if [ $# -eq 0 ]; then
+      (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree repair)
+      echo "✅ Все .git-пути восстановлены для работы на хосте (все worktree)"
+    else
+      status=0
+      for slot in "$@"; do
+        worktree=$(ai_worktree_path "$slot")
+        if [ ! -f "$worktree/.git" ]; then
+          echo "⚠️   Пропускаю $worktree: нет .git"
+          status=1
+          continue
+        fi
+        name=$(ai_gitdir_name_from_worktree "$worktree" 2>/dev/null || true)
+        [ -n "$name" ] || name=$(basename -- "$worktree")
+        if ai_write_host_gitdir "$worktree" "$name"; then
+          echo "🖥️   $worktree -> $AI_PROJECT_ROOT/.git/worktrees/$name"
+        else
+          status=1
+        fi
+      done
+      if [ "$status" -eq 0 ]; then
+        echo "✅ .git-путь указанных слотов обновлён для работы на хосте"
+      fi
+      exit "$status"
+    fi
+    ;;
+
+  docker)
+    dirs=${*:-}
+    if [ -z "$dirs" ]; then
+      dirs=$(ai_list_worktree_dirs)
+    else
+      resolved=""
+      for slot in "$@"; do
+        resolved="$resolved $(ai_worktree_path "$slot")"
+      done
+      dirs=$resolved
+    fi
+
+    if [ -z "$dirs" ]; then
+      echo "ℹ️  Worktree не найдены"
+      exit 0
+    fi
+
+    for worktree in $dirs; do
+      [ -f "$worktree/.git" ] || { echo "⚠️  Пропускаю $worktree: нет .git"; continue; }
+      name=$(ai_gitdir_name_from_worktree "$worktree" 2>/dev/null || true)
+      [ -n "$name" ] || name=$(basename -- "$worktree")
+      ai_write_container_gitdir "$worktree" "$name"
+      echo "🐳 $worktree -> $(ai_container_source_dir)/.git/worktrees/$name"
+    done
+    echo "✅ .git-пути переписаны для контейнеров"
+    ;;
+
+  list)
+    ai_require_command git
+    (CDPATH= cd -- "$AI_PROJECT_ROOT" && git worktree list)
+    ;;
+
+  *)
+    usage
+    exit 1
+    ;;
+esac

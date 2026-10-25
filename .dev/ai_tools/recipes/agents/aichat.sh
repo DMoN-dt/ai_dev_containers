@@ -1,6 +1,11 @@
 CHECK_CMD="aichat"
-AICHAT_URL="$(echo "$TOOL_AICHAT_URL" | tr -d ' ')"
-INSTALL_CMD="curl -L $AICHAT_URL | tar xz -C /app_ai_tools/bin"
+
+if [ -n "${TOOL_AICHAT_URL:-}" ]; then
+  AICHAT_URL="$(printf '%s' "$TOOL_AICHAT_URL" | tr -d ' ')"
+  INSTALL_CMD="curl -L $AICHAT_URL | tar xz -C $BIN_DIR"
+else
+  INSTALL_CMD="echo 'TOOL_AICHAT_URL не задан в .env' && false"
+fi
 
 # Генерация конфига aichat на лету под провайдера
 CONFIG_DIR="$HOME/.config/aichat"
